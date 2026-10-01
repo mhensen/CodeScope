@@ -4613,15 +4613,18 @@ impl Sidebar {
         // adopts the session like any other Claude tab. A later reopen
         // rebuilds the plain command, so the flag does not stick.
         if let Some(claude) = self.agent_registry.get_by_id("claude") {
-            let variants: [(&'static str, &'static str, &'static str, &'static str, bool); 2] = [
-                ("submenu-claude-resume", "Claude Code: resume session…", "resume", codescope_core::CLAUDE_RESUME_PICKER_FLAG, false),
-                ("submenu-claude-yolo", "Claude Code: skip permissions", "skip-permissions", codescope_core::CLAUDE_SKIP_PERMISSIONS_FLAG, true),
+            let resume = codescope_core::CLAUDE_RESUME_PICKER_FLAG;
+            let skip = codescope_core::CLAUDE_SKIP_PERMISSIONS_FLAG;
+            let variants: [(&'static str, &'static str, &'static str, Vec<&'static str>, bool); 3] = [
+                ("submenu-claude-resume", "Claude Code: resume session…", "resume", vec![resume], false),
+                ("submenu-claude-yolo", "Claude Code: skip permissions", "skip-permissions", vec![skip], true),
+                ("submenu-claude-resume-yolo", "Claude Code: resume + skip permissions", "resume-skip-permissions", vec![resume, skip], true),
             ];
             body = body.child(div().h_px().bg(divider).my_1());
-            for (row_id, label, title_suffix, flag, dangerous) in variants {
+            for (row_id, label, title_suffix, flags, dangerous) in variants {
                 let path = PathBuf::from(worktree_path);
                 let title = SharedString::from(format!("{} · {title_suffix}", title_prefix.as_ref()));
-                let cmd = codescope_core::build_new_session_auto_type_with(claude, &[flag]);
+                let cmd = codescope_core::build_new_session_auto_type_with(claude, &flags);
                 let agent_id_str: SharedString = claude.id.clone().into();
                 let frost_hover = frost;
                 let base = if dangerous { theme::signal_warn() } else { ink_dim };

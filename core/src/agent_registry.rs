@@ -1003,6 +1003,13 @@ mod tests {
             build_new_session_auto_type_with(&profile, &[CLAUDE_SKIP_PERMISSIONS_FLAG]),
             Some("claude --dangerously-skip-permissions".into()),
         );
+        assert_eq!(
+            build_new_session_auto_type_with(
+                &profile,
+                &[CLAUDE_RESUME_PICKER_FLAG, CLAUDE_SKIP_PERMISSIONS_FLAG]
+            ),
+            Some("claude --resume --dangerously-skip-permissions".into()),
+        );
     }
 
     #[test]
