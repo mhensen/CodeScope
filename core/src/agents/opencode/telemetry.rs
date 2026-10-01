@@ -541,6 +541,7 @@ pub fn process_message_dir(watch: &mut SessionWatch) -> bool {
         context_pct,
         turn_count: watch.turn_count,
         last_turn_duration,
+        tokens_per_sec: None,
         state,
         quiet_timeout: false,
     };

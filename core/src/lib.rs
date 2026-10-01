@@ -39,6 +39,7 @@ pub mod telemetry;
 pub mod theme;
 pub mod time;
 pub mod update_check;
+pub mod usage;
 pub mod window_state;
 
 pub use agent::{AgentId, agent_id_from_auto_type};
@@ -75,6 +76,7 @@ pub use tab_drag::{TabRect, compute_drop_index};
 pub use tab_title::{TAB_TITLE_SEPARATOR, rebuild_title, restored_title};
 pub use telemetry::{
     SessionState, TelemetrySnapshot, context_window_for_model, format_context_pct, format_tokens,
+    format_tokens_per_sec,
 };
 pub use theme::{Rgb, Theme, ThemePalette, builtin};
 pub use window_state::WindowState;
