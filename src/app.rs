@@ -565,6 +565,17 @@ const TELEMETRY_POLL_ACTIVE: Duration = Duration::from_millis(250);
 /// (avoids a wakeup/teardown dance per tab) but throttle to a
 /// 30 s heartbeat so an idle CodeScope doesn't burn cycles.
 const TELEMETRY_POLL_IDLE: Duration = Duration::from_secs(30);
+/// Status-bar memory readout cadence. A single syscall on Windows /
+/// Linux, one `ps` spawn on macOS — cheap, and the number only needs to
+/// feel live.
+const MEMORY_POLL: Duration = Duration::from_secs(5);
+/// Claude plan-usage refresh cadence. The endpoint is undocumented and
+/// rate-limited, and the 5 h / 7 d percentages move slowly, so this is
+/// deliberately lazy.
+const PLAN_USAGE_POLL: Duration = Duration::from_secs(120);
+/// Usage percentage at which a plan-limit segment turns to the warning
+/// colour.
+const USAGE_WARN_PCT: f32 = 80.0;
 /// Cap on simultaneously-visible toasts. Mirrors the C# build's
 /// ToastService visible-cap. When the user fires a flurry of
 /// actions (or hits a recurring error) we evict the oldest so the
@@ -919,6 +930,13 @@ pub struct AppShell {
     /// (0, 0). Refreshed every frame, so window resizes / status-bar
     /// reflows track the popover automatically.
     bell_bounds: Option<gpui::Bounds<gpui::Pixels>>,
+    /// Working set of this process, refreshed by `start_status_poll`.
+    /// `None` until the first sample or on a platform that can't report.
+    memory_bytes: Option<u64>,
+    /// Claude 5 h / 7 d / monthly plan usage, refreshed by
+    /// `start_status_poll`. `None` when not logged in with a Claude
+    /// subscription, offline, or before the first fetch.
+    plan_usage: Option<codescope_core::usage::PlanUsage>,
     /// In-memory snapshot of the on-disk session catalog used by
     /// the session-lifecycle helpers. Initialised at construction
     /// from a [`SessionManager::load_with_sweep`] pass so the
@@ -1678,6 +1696,8 @@ impl AppShell {
             last_monitor_change: None,
             maximized_before_minimize: false,
             bell_bounds: None,
+            memory_bytes: None,
+            plan_usage: None,
             projects: projects_for_sessions,
             agent_registry,
             command_palette: None,
@@ -1696,6 +1716,7 @@ impl AppShell {
             update_progress_toast_id: None,
         };
         shell.start_telemetry_poll(cx);
+        shell.start_status_poll(cx);
         shell.start_bots_poll(cx);
         shell.start_agent_discovery_poll(cx);
         shell.schedule_taskbar_badge_init(cx);
@@ -2105,6 +2126,60 @@ impl AppShell {
                     Ok(next) => interval = next,
                     Err(_) => break,
                 }
+            }
+        })
+        .detach();
+    }
+
+    /// Refresh the status bar's memory readout and Claude plan usage.
+    /// Both sample on the background executor (the usage fetch is a
+    /// blocking HTTP call) and only `notify` when the displayed value
+    /// changed, so an idle app doesn't repaint every tick.
+    fn start_status_poll(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                let bytes = cx
+                    .background_spawn(async {
+                        codescope_core::memory_watchdog::process_memory_bytes()
+                    })
+                    .await;
+                let alive = this.update(cx, |this, cx| {
+                    let shown =
+                        |b: Option<u64>| b.map(codescope_core::memory_watchdog::format_memory);
+                    if shown(this.memory_bytes) != shown(bytes) {
+                        this.memory_bytes = bytes;
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    break;
+                }
+                cx.background_executor().timer(MEMORY_POLL).await;
+            }
+        })
+        .detach();
+
+        cx.spawn(async move |this, cx| {
+            loop {
+                let fetched = cx
+                    .background_spawn(async { codescope_core::usage::fetch_plan_usage() })
+                    .await;
+                let alive = this.update(cx, |this, cx| match fetched {
+                    Ok(usage) => {
+                        if this.plan_usage.as_ref() != Some(&usage) {
+                            this.plan_usage = Some(usage);
+                            cx.notify();
+                        }
+                    }
+                    // Transient failure (offline, 429, expired token)
+                    // keeps the last good reading; a first-ever failure
+                    // just leaves the segment hidden.
+                    Err(err) => eprintln!("[plan_usage] {err:#}"),
+                });
+                if alive.is_err() {
+                    break;
+                }
+                cx.background_executor().timer(PLAN_USAGE_POLL).await;
             }
         })
         .detach();
@@ -5374,7 +5449,7 @@ impl AppShell {
             .and_then(|t| t.adopted_session_id.clone());
         let active_title: Option<SharedString> = active_tab.map(|t| t.title.clone());
 
-        let (git, worktree_total, worktree_dirty, projects_empty) = {
+        let (git, worktree_total, worktree_dirty, projects_empty, project_name) = {
             let sidebar = self.sidebar.read(cx);
             let g = active_working_dir
                 .as_deref()
@@ -5382,7 +5457,11 @@ impl AppShell {
                 .cloned();
             let (t, d) = sidebar.worktree_counts();
             let empty = sidebar.projects().projects.is_empty();
-            (g, t, d, empty)
+            let name: Option<SharedString> = active_working_dir
+                .as_deref()
+                .and_then(|p| sidebar.projects().project_name_for_path(p))
+                .map(|n| n.to_string().into());
+            (g, t, d, empty, name)
         };
 
         let snapshot = active_session_id
@@ -5444,6 +5523,13 @@ impl AppShell {
                         .rounded_full()
                         .bg(session_dot_color),
                 )
+                .children(project_name.map(|name| {
+                    div()
+                        .flex_shrink_0()
+                        .text_color(ink)
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(name)
+                }))
                 .child(
                     // `flex_grow` + `truncate` so a long tab title /
                     // branch name doesn't shove the right cluster off
@@ -5571,6 +5657,11 @@ impl AppShell {
             row
         });
 
+        let rate_segment = snapshot
+            .as_ref()
+            .and_then(|s| s.tokens_per_sec)
+            .map(|r| div().text_color(ink).child(codescope_core::format_tokens_per_sec(r)));
+
         let turns_segment = snapshot.as_ref().filter(|s| s.turn_count > 0).map(|s| {
             let suffix = if s.turn_count == 1 { "turn" } else { "turns" };
             div()
@@ -5599,6 +5690,56 @@ impl AppShell {
                     )
                     .child(codescope_core::ClaudeTranscriptTail::format_duration(d))
             });
+
+        // Plan usage (5 h session / 7 d week / monthly extra) and this
+        // process's memory. Each piece hides on its own when its data is
+        // missing; the whole cluster hides when all are.
+        let usage_pieces: Vec<gpui::AnyElement> = {
+            let window = |label: &'static str, w: &codescope_core::usage::UsageWindow| {
+                let color = if w.percent >= USAGE_WARN_PCT { signal_warn } else { ink };
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(div().text_color(ink_dim).child(label))
+                    .child(
+                        div()
+                            .text_color(color)
+                            .child(codescope_core::usage::format_window_pct(w.percent)),
+                    )
+                    .into_any_element()
+            };
+            let mut v = Vec::new();
+            if let Some(u) = self.plan_usage.as_ref() {
+                if let Some(w) = u.five_hour.as_ref() {
+                    v.push(window("5h", w));
+                }
+                if let Some(w) = u.seven_day.as_ref() {
+                    v.push(window("7d", w));
+                }
+                if let Some(w) = u.month.as_ref() {
+                    v.push(window("mo", w));
+                }
+            }
+            if let Some(b) = self.memory_bytes {
+                v.push(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(4.0))
+                        .child(div().text_color(ink_dim).child("mem"))
+                        .child(
+                            div()
+                                .text_color(ink)
+                                .child(codescope_core::memory_watchdog::format_memory(b)),
+                        )
+                        .into_any_element(),
+                );
+            }
+            v
+        };
 
         let agent_summary_visible = agent_busy + agent_idle > 0;
         let agent_segment = if agent_summary_visible {
@@ -5893,6 +6034,9 @@ impl AppShell {
             if let Some(seg) = tokens_segment {
                 model_cluster.push(seg.into_any_element());
             }
+            if let Some(seg) = rate_segment {
+                model_cluster.push(seg.into_any_element());
+            }
             if let Some(seg) = turns_segment {
                 model_cluster.push(seg.into_any_element());
             }
@@ -5901,6 +6045,9 @@ impl AppShell {
             }
             if !model_cluster.is_empty() {
                 clusters.push(model_cluster);
+            }
+            if !usage_pieces.is_empty() {
+                clusters.push(usage_pieces);
             }
             if let Some(seg) = agent_segment {
                 clusters.push(vec![seg.into_any_element()]);
@@ -9786,6 +9933,7 @@ mod tests {
             context_pct: None,
             turn_count: 0,
             last_turn_duration: None,
+            tokens_per_sec: None,
             state,
             quiet_timeout: false,
         }

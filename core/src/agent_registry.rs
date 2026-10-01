@@ -417,6 +417,23 @@ pub fn build_new_session_auto_type(profile: &AgentProfile) -> Option<String> {
     Some(argv.join(" "))
 }
 
+/// Launch flags for the Claude Code submenu variants. Kept next to the
+/// builder so the menu and its tests share one spelling.
+pub const CLAUDE_RESUME_PICKER_FLAG: &str = "--resume";
+pub const CLAUDE_SKIP_PERMISSIONS_FLAG: &str = "--dangerously-skip-permissions";
+
+/// [`build_new_session_auto_type`] plus extra one-off CLI flags, for menu
+/// rows like "resume picker" or "skip permissions". The flags apply to
+/// this launch only; they are not stored on the profile.
+pub fn build_new_session_auto_type_with(profile: &AgentProfile, extra_args: &[&str]) -> Option<String> {
+    let mut cmd = build_new_session_auto_type(profile)?;
+    for arg in extra_args {
+        cmd.push(' ');
+        cmd.push_str(arg);
+    }
+    Some(cmd)
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -973,5 +990,37 @@ mod tests {
             build_new_session_auto_type(&profile),
             Some("claude".into()),
         );
+    }
+
+    #[test]
+    fn build_new_session_auto_type_with_appends_flags() {
+        let profile = built_in_defaults().into_iter().find(|p| p.id == "claude").unwrap();
+        assert_eq!(
+            build_new_session_auto_type_with(&profile, &[CLAUDE_RESUME_PICKER_FLAG]),
+            Some("claude --resume".into()),
+        );
+        assert_eq!(
+            build_new_session_auto_type_with(&profile, &[CLAUDE_SKIP_PERMISSIONS_FLAG]),
+            Some("claude --dangerously-skip-permissions".into()),
+        );
+        assert_eq!(
+            build_new_session_auto_type_with(
+                &profile,
+                &[CLAUDE_RESUME_PICKER_FLAG, CLAUDE_SKIP_PERMISSIONS_FLAG]
+            ),
+            Some("claude --resume --dangerously-skip-permissions".into()),
+        );
+    }
+
+    #[test]
+    fn build_new_session_auto_type_with_keeps_profile_args_and_empty_command_is_none() {
+        let mut profile = built_in_defaults().into_iter().find(|p| p.id == "claude").unwrap();
+        profile.new_session_args = vec!["--model".into(), "opus".into()];
+        assert_eq!(
+            build_new_session_auto_type_with(&profile, &["--resume"]),
+            Some("claude --model opus --resume".into()),
+        );
+        profile.command = "  ".into();
+        assert_eq!(build_new_session_auto_type_with(&profile, &["--resume"]), None);
     }
 }

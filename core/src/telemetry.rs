@@ -60,6 +60,12 @@ pub struct TelemetrySnapshot {
     /// (`assistant.timestamp − user.timestamp`). `None` until the
     /// first complete round-trip.
     pub last_turn_duration: Option<Duration>,
+    /// Output tokens per second of the most recent assistant reply:
+    /// `output_tokens / (assistant.timestamp - previous entry timestamp)`,
+    /// so tool-execution gaps don't dilute it. `None` until a reply is
+    /// long and slow enough to measure ([`tokens_per_sec`]), and for
+    /// agents whose transcripts don't carry the data.
+    pub tokens_per_sec: Option<f32>,
     /// Current activity state of the session.
     pub state: SessionState,
     /// `true` when `state` is `Idle` only because the transcript went
@@ -96,6 +102,30 @@ pub fn context_window_for_model(model_id: &str) -> Option<u64> {
         return Some(1_000_000);
     }
     None
+}
+
+/// Shortest generation worth a rate: below this, one entry's
+/// `output_tokens / dt` is dominated by latency and timestamp rounding.
+const MIN_RATE_OUTPUT_TOKENS: u64 = 16;
+const MIN_RATE_SPAN_SECS: f64 = 0.5;
+
+/// Output tokens per second for one assistant reply that took `span_secs`
+/// since the entry before it. `None` when the sample is too small to mean
+/// anything.
+pub fn tokens_per_sec(output_tokens: u64, span_secs: f64) -> Option<f32> {
+    if output_tokens < MIN_RATE_OUTPUT_TOKENS || span_secs < MIN_RATE_SPAN_SECS {
+        return None;
+    }
+    Some((output_tokens as f64 / span_secs) as f32)
+}
+
+/// Format a rate for the status bar: `"42 t/s"`, `"3.5 t/s"`.
+pub fn format_tokens_per_sec(rate: f32) -> String {
+    if rate >= 10.0 {
+        format!("{:.0} t/s", rate.round())
+    } else {
+        format!("{rate:.1} t/s")
+    }
 }
 
 /// Read a file's modification time, treating any stat error as "no
@@ -272,6 +302,26 @@ mod tests {
         // string with a single fractional digit (no scientific
         // notation, no trailing zero stripping). Length isn't bounded.
         assert_eq!(format_tokens(999_999_999), "1000.0M");
+    }
+
+    // --- tokens_per_sec ---
+
+    #[test]
+    fn tokens_per_sec_divides_output_by_span() {
+        assert_eq!(tokens_per_sec(200, 10.0), Some(20.0));
+    }
+
+    #[test]
+    fn tokens_per_sec_ignores_tiny_samples() {
+        assert_eq!(tokens_per_sec(15, 1.0), None);
+        assert_eq!(tokens_per_sec(500, 0.1), None);
+        assert_eq!(tokens_per_sec(500, 0.0), None);
+    }
+
+    #[test]
+    fn format_tokens_per_sec_precision() {
+        assert_eq!(format_tokens_per_sec(42.4), "42 t/s");
+        assert_eq!(format_tokens_per_sec(3.46), "3.5 t/s");
     }
 
     // --- format_context_pct ---

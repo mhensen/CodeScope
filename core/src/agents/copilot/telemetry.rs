@@ -289,6 +289,7 @@ pub fn process_new_lines(
             context_pct,
             turn_count,
             last_turn_duration,
+            tokens_per_sec: None,
             state,
             quiet_timeout: false,
         });

@@ -438,6 +438,11 @@ pub fn process_new_lines(
     let mut tokens_used = snapshot.as_ref().map_or(0, |s| s.tokens_used);
     let mut turn_count = snapshot.as_ref().map_or(0, |s| s.turn_count);
     let mut last_turn_duration = snapshot.as_ref().and_then(|s| s.last_turn_duration);
+    let mut tokens_per_sec = snapshot.as_ref().and_then(|s| s.tokens_per_sec);
+    // Timestamp of the entry before the one being read, so an assistant
+    // reply is timed from when it was requested (the prompt or the tool
+    // result that triggered it), not from the start of the whole turn.
+    let mut prev_ts: Option<f64> = *last_user_ts;
     // An idle the quiet-window fallback produced (#351) is the tail's
     // guess, not something the transcript said: the parser's own state
     // was still `Busy`. Seed from that, so output that resumes without a
@@ -473,6 +478,12 @@ pub fn process_new_lines(
             Some(e) => e,
             None => continue,
         };
+
+        let entry_ts = entry.timestamp_secs;
+        let span_start = prev_ts;
+        if entry_ts.is_some() {
+            prev_ts = entry_ts;
+        }
 
         match entry.kind {
             // The CLI answered a client-side slash command by itself
@@ -536,6 +547,13 @@ pub fn process_new_lines(
                     // own definition.
                     turn_count += 1;
 
+                    if let (Some(start), Some(end)) = (span_start, entry_ts)
+                        && let Some(rate) =
+                            crate::telemetry::tokens_per_sec(entry.output_tokens, end - start)
+                    {
+                        tokens_per_sec = Some(rate);
+                    }
+
                     // Compute turn duration from last fresh user prompt.
                     if let (Some(user_ts), Some(asst_ts)) = (*last_user_ts, entry.timestamp_secs)
                         && asst_ts > user_ts {
@@ -587,6 +605,7 @@ pub fn process_new_lines(
             context_pct,
             turn_count,
             last_turn_duration,
+            tokens_per_sec,
             state,
             quiet_timeout: false,
         });
@@ -978,6 +997,49 @@ mod tests {
             .open(path)
             .unwrap();
         f.write_all(content.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn tokens_per_sec_times_reply_from_previous_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        write_lines(
+            &path,
+            &[
+                r#"{"type":"user","sessionId":"s","timestamp":"2026-04-22T08:00:00Z","message":{"role":"user","content":"go"}}"#,
+                r#"{"type":"assistant","sessionId":"s","timestamp":"2026-04-22T08:00:10Z","message":{"role":"assistant","stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":100,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}"#,
+                r#"{"type":"user","sessionId":"s","timestamp":"2026-04-22T08:00:40Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"x","content":"ok"}]}}"#,
+                r#"{"type":"assistant","sessionId":"s","timestamp":"2026-04-22T08:00:50Z","message":{"role":"assistant","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":300,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}"#,
+            ],
+        );
+
+        let mut tail = FileTail::default();
+        let mut snap: Option<TelemetrySnapshot> = None;
+        let mut last_user_ts = None;
+        read_lines(path.as_path(), &mut tail, &mut snap, &mut last_user_ts);
+
+        assert_eq!(snap.unwrap().tokens_per_sec, Some(30.0));
+    }
+
+    #[test]
+    fn tokens_per_sec_keeps_last_value_across_tiny_reply() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        write_lines(
+            &path,
+            &[
+                r#"{"type":"user","sessionId":"s","timestamp":"2026-04-22T08:00:00Z","message":{"role":"user","content":"go"}}"#,
+                r#"{"type":"assistant","sessionId":"s","timestamp":"2026-04-22T08:00:10Z","message":{"role":"assistant","stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":200,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}"#,
+                r#"{"type":"assistant","sessionId":"s","timestamp":"2026-04-22T08:00:11Z","message":{"role":"assistant","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":3,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}"#,
+            ],
+        );
+
+        let mut tail = FileTail::default();
+        let mut snap: Option<TelemetrySnapshot> = None;
+        let mut last_user_ts = None;
+        read_lines(path.as_path(), &mut tail, &mut snap, &mut last_user_ts);
+
+        assert_eq!(snap.unwrap().tokens_per_sec, Some(20.0));
     }
 
     #[test]

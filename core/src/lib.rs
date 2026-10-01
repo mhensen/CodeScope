@@ -39,11 +39,13 @@ pub mod telemetry;
 pub mod theme;
 pub mod time;
 pub mod update_check;
+pub mod usage;
 pub mod window_state;
 
 pub use agent::{AgentId, agent_id_from_auto_type};
 pub use agent_registry::{
-    AgentProfile, AgentRegistry, build_new_session_auto_type, build_resume_auto_type,
+    AgentProfile, AgentRegistry, CLAUDE_RESUME_PICKER_FLAG, CLAUDE_SKIP_PERMISSIONS_FLAG,
+    build_new_session_auto_type, build_new_session_auto_type_with, build_resume_auto_type,
     built_in_defaults,
 };
 pub use agents::claude::discovery::POLL_INTERVAL_MS as CLAUDE_DISCOVERY_POLL_MS;
@@ -75,6 +77,7 @@ pub use tab_drag::{TabRect, compute_drop_index};
 pub use tab_title::{TAB_TITLE_SEPARATOR, rebuild_title, restored_title};
 pub use telemetry::{
     SessionState, TelemetrySnapshot, context_window_for_model, format_context_pct, format_tokens,
+    format_tokens_per_sec,
 };
 pub use theme::{Rgb, Theme, ThemePalette, builtin};
 pub use window_state::WindowState;
