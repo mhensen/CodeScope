@@ -44,7 +44,8 @@ pub mod window_state;
 
 pub use agent::{AgentId, agent_id_from_auto_type};
 pub use agent_registry::{
-    AgentProfile, AgentRegistry, build_new_session_auto_type, build_resume_auto_type,
+    AgentProfile, AgentRegistry, CLAUDE_RESUME_PICKER_FLAG, CLAUDE_SKIP_PERMISSIONS_FLAG,
+    build_new_session_auto_type, build_new_session_auto_type_with, build_resume_auto_type,
     built_in_defaults,
 };
 pub use agents::claude::discovery::POLL_INTERVAL_MS as CLAUDE_DISCOVERY_POLL_MS;

@@ -4607,6 +4607,56 @@ impl Sidebar {
             first = false;
         }
 
+        // Claude Code launch variants: pick an old conversation, or run
+        // with permission prompts off. One-off flags on top of the
+        // profile's normal launch; `agent_id` stays "claude" so discovery
+        // adopts the session like any other Claude tab. A later reopen
+        // rebuilds the plain command, so the flag does not stick.
+        if let Some(claude) = self.agent_registry.get_by_id("claude") {
+            let variants: [(&'static str, &'static str, &'static str, &'static str, bool); 2] = [
+                ("submenu-claude-resume", "Claude Code: resume session…", "resume", codescope_core::CLAUDE_RESUME_PICKER_FLAG, false),
+                ("submenu-claude-yolo", "Claude Code: skip permissions", "skip-permissions", codescope_core::CLAUDE_SKIP_PERMISSIONS_FLAG, true),
+            ];
+            body = body.child(div().h_px().bg(divider).my_1());
+            for (row_id, label, title_suffix, flag, dangerous) in variants {
+                let path = PathBuf::from(worktree_path);
+                let title = SharedString::from(format!("{} · {title_suffix}", title_prefix.as_ref()));
+                let cmd = codescope_core::build_new_session_auto_type_with(claude, &[flag]);
+                let agent_id_str: SharedString = claude.id.clone().into();
+                let frost_hover = frost;
+                let base = if dangerous { theme::signal_warn() } else { ink_dim };
+                body = body.child(
+                    div()
+                        .id(SharedString::from(row_id))
+                        .h(px(28.0))
+                        .px_3()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .text_size(px(12.5))
+                        .text_color(base)
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(frost_hover))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                cx.emit(SidebarEvent::OpenSession {
+                                    working_directory: path.clone(),
+                                    title: title.clone(),
+                                    auto_type: cmd.clone().map(SharedString::from),
+                                    agent_id: Some(agent_id_str.clone()),
+                                    force_new: true,
+                                    force_shell: false,
+                                });
+                                this.close_menu(cx);
+                            }),
+                        )
+                        .child(div().flex_grow().child(label)),
+                );
+            }
+        }
+
         // Plain-shell fallback row. Agents above are the primary
         // actions; this row is for "I just want a terminal here, no
         // agent." Separated by a divider so the visual grouping
