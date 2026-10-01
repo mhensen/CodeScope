@@ -4607,16 +4607,15 @@ impl Sidebar {
             first = false;
         }
 
-        // Claude Code launch variants: pick an old conversation, or run
-        // with permission prompts off. One-off flags on top of the
+        // Claude Code launch variants, both with permission prompts off:
+        // a fresh session, or pick an old conversation. One-off flags on top of the
         // profile's normal launch; `agent_id` stays "claude" so discovery
         // adopts the session like any other Claude tab. A later reopen
         // rebuilds the plain command, so the flag does not stick.
         if let Some(claude) = self.agent_registry.get_by_id("claude") {
             let resume = codescope_core::CLAUDE_RESUME_PICKER_FLAG;
             let skip = codescope_core::CLAUDE_SKIP_PERMISSIONS_FLAG;
-            let variants: [(&'static str, &'static str, &'static str, Vec<&'static str>, bool); 3] = [
-                ("submenu-claude-resume", "Claude Code: resume session…", "resume", vec![resume], false),
+            let variants: [(&'static str, &'static str, &'static str, Vec<&'static str>, bool); 2] = [
                 ("submenu-claude-yolo", "Claude Code: skip permissions", "skip-permissions", vec![skip], true),
                 ("submenu-claude-resume-yolo", "Claude Code: resume + skip permissions", "resume-skip-permissions", vec![resume, skip], true),
             ];
